@@ -55,5 +55,72 @@ else
     echo "[entrypoint-railway] TS_AUTHKEY not set — skipping Tailscale bring-up."
 fi
 
+# ---------------------------------------------------------------------------
+# Codex OAuth bootstrap (workaround for OpenAI's broken device-code path).
+# ---------------------------------------------------------------------------
+# Why this exists:
+#   The dashboard's KEYS → OpenAI Codex LOGIN button uses OpenAI's device-code
+#   OAuth flow, which requires "Enable device code authorization for Codex"
+#   to be toggled on in ChatGPT Settings → Security. As of mid-2026 that
+#   toggle is reported as missing / broken across personal and workspace
+#   accounts (openai/codex#9253, #9282, #9327, #9418). Local `codex login`
+#   uses PKCE with a localhost callback and is unaffected — so we let the
+#   operator do that login on their Mac, then ship the resulting tokens to
+#   the container as a base64-encoded env var.
+#
+# What this does (once, on first boot when CODEX_AUTH_JSON_B64 is set):
+#   - decode the Codex CLI auth.json into /opt/data/.codex/auth.json
+#   - rewrap it into the Hermes auth-store schema with
+#     active_provider="openai-codex" at /opt/data/auth.json
+#   so Hermes's auto-detect picks Codex as the inference provider and
+#   refreshes tokens itself from then on. Subsequent boots see the Hermes
+#   auth.json on the volume and skip the bootstrap.
+#
+# The env var can be deleted / sealed once the bootstrap has run.
+HERMES_AUTH_STORE="${HERMES_HOME}/auth.json"
+CODEX_HOME_PATH="${CODEX_HOME:-${HERMES_HOME}/.codex}"
+
+if [ -n "${CODEX_AUTH_JSON_B64:-}" ] && [ ! -f "${HERMES_AUTH_STORE}" ]; then
+    echo "[entrypoint-railway] Bootstrapping Codex auth → Hermes auth store."
+    mkdir -p "${CODEX_HOME_PATH}"
+    echo "${CODEX_AUTH_JSON_B64}" | base64 -d > "${CODEX_HOME_PATH}/auth.json"
+    chmod 600 "${CODEX_HOME_PATH}/auth.json"
+
+    python3 - "${CODEX_HOME_PATH}/auth.json" "${HERMES_AUTH_STORE}" <<'PYEOF'
+import json
+import sys
+from datetime import datetime, timezone
+
+codex_path, hermes_path = sys.argv[1], sys.argv[2]
+with open(codex_path) as f:
+    codex = json.load(f)
+
+tokens = codex.get("tokens") or {}
+last_refresh = codex.get("last_refresh") or (
+    datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+)
+
+hermes_auth = {
+    "active_provider": "openai-codex",
+    "providers": {
+        "openai-codex": {
+            "tokens": tokens,
+            "last_refresh": last_refresh,
+            "auth_mode": "chatgpt",
+        }
+    },
+}
+with open(hermes_path, "w") as f:
+    json.dump(hermes_auth, f, indent=2)
+
+access_len = len(tokens.get("access_token", "")) if isinstance(tokens.get("access_token"), str) else 0
+print(f"[entrypoint-railway] Wrote Hermes auth store ({access_len}-char access_token).")
+PYEOF
+    chmod 600 "${HERMES_AUTH_STORE}"
+elif [ -f "${HERMES_AUTH_STORE}" ] && [ -n "${CODEX_AUTH_JSON_B64:-}" ]; then
+    echo "[entrypoint-railway] Hermes auth store already exists; ignoring CODEX_AUTH_JSON_B64."
+    echo "[entrypoint-railway] (Safe to seal / delete that env var in Railway now.)"
+fi
+
 # Hand off to the upstream entrypoint (gosu drop + Hermes startup).
 exec /opt/hermes/docker/entrypoint.sh "$@"
