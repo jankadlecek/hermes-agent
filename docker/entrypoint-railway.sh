@@ -49,16 +49,33 @@ if [ -n "${TS_AUTHKEY:-}" ]; then
     # In userspace-networking mode tailscaled does NOT forward incoming
     # tailnet connections to listeners on the container's loopback /
     # 0.0.0.0 ports. We have to explicitly publish each service via
-    # `tailscale serve` so tailscaled accepts the connection on the
-    # tailnet side and proxies it into the local process.
+    # `tailscale serve`.
     #
-    # We use TCP passthrough so the published port on the tailnet matches
-    # the local port — keeps the operator's URLs intuitive
-    # (http://hermes.<tailnet>.ts.net:8642 and :9119).
-    tailscale serve --bg --tcp=8642 tcp://127.0.0.1:8642 || \
-        echo "[entrypoint-railway] WARN: failed to publish API server (8642) via tailscale serve"
-    tailscale serve --bg --tcp=9119 tcp://127.0.0.1:9119 || \
-        echo "[entrypoint-railway] WARN: failed to publish dashboard (9119) via tailscale serve"
+    # We use HTTPS reverse-proxy mode (--https=PORT) rather than --tcp
+    # passthrough. Userspace --tcp passthrough degrades on large
+    # responses: server returns 200 OK but body bytes stall to ~1 kB/s
+    # within ~30 min of uptime (Tailscale window scaling / buffer issue),
+    # which makes the dashboard's 1.5 MB JS bundle unloadable in Chrome.
+    # --https uses a proper HTTP reverse-proxy code path with TLS
+    # termination at the edge, which is well-tested and not affected.
+    # Requires HTTPS Certificates to be enabled in the Tailscale admin
+    # (Settings → DNS → HTTPS Certificates).
+    #
+    # Clear any prior --tcp configuration left on the volume's
+    # tailscaled.state before publishing the new HTTPS config; otherwise
+    # the old --tcp listeners coexist and shadow the HTTPS ones.
+    tailscale serve reset || true
+
+    # Dashboard on the default HTTPS port (443) — operator opens
+    #   https://hermes.<tailnet>.ts.net   (no port suffix needed)
+    tailscale serve --bg --https=443 http://127.0.0.1:9119 || \
+        echo "[entrypoint-railway] WARN: failed to publish dashboard (https://...) via tailscale serve"
+
+    # API server on its conventional port (8642), TLS-terminated
+    #   https://hermes.<tailnet>.ts.net:8642/v1/...
+    tailscale serve --bg --https=8642 http://127.0.0.1:8642 || \
+        echo "[entrypoint-railway] WARN: failed to publish API server (https://...:8642) via tailscale serve"
+
     echo "[entrypoint-railway] tailscale serve status:"
     tailscale serve status || true
 else
