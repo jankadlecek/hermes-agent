@@ -80,20 +80,31 @@ fi
 HERMES_AUTH_STORE="${HERMES_HOME}/auth.json"
 CODEX_HOME_PATH="${CODEX_HOME:-${HERMES_HOME}/.codex}"
 
+# Bootstrap is best-effort: any failure is logged but does NOT stop the
+# container. Otherwise a malformed base64 (Railway paste truncation,
+# stray whitespace, etc.) would put the container into a crash loop
+# instead of letting it boot up with the dashboard reachable so the
+# operator can fix the env var. `set -e` is suspended for this block.
+set +e
 if [ -n "${CODEX_AUTH_JSON_B64:-}" ] && [ ! -f "${HERMES_AUTH_STORE}" ]; then
     echo "[entrypoint-railway] Bootstrapping Codex auth → Hermes auth store."
     mkdir -p "${CODEX_HOME_PATH}"
-    echo "${CODEX_AUTH_JSON_B64}" | base64 -d > "${CODEX_HOME_PATH}/auth.json"
-    chmod 600 "${CODEX_HOME_PATH}/auth.json"
-
-    python3 - "${CODEX_HOME_PATH}/auth.json" "${HERMES_AUTH_STORE}" <<'PYEOF'
+    if echo "${CODEX_AUTH_JSON_B64}" | base64 -d > "${CODEX_HOME_PATH}/auth.json" 2>/dev/null; then
+        chmod 600 "${CODEX_HOME_PATH}/auth.json"
+        python3 - "${CODEX_HOME_PATH}/auth.json" "${HERMES_AUTH_STORE}" <<'PYEOF'
 import json
 import sys
 from datetime import datetime, timezone
 
 codex_path, hermes_path = sys.argv[1], sys.argv[2]
-with open(codex_path) as f:
-    codex = json.load(f)
+try:
+    with open(codex_path) as f:
+        codex = json.load(f)
+except Exception as exc:
+    print(f"[entrypoint-railway] WARN: failed to parse decoded Codex auth.json: {exc}")
+    print("[entrypoint-railway] WARN: CODEX_AUTH_JSON_B64 is likely truncated or malformed.")
+    print("[entrypoint-railway] WARN: container will start without an inference provider — fix the env var and redeploy.")
+    sys.exit(0)
 
 tokens = codex.get("tokens") or {}
 last_refresh = codex.get("last_refresh") or (
@@ -116,11 +127,15 @@ with open(hermes_path, "w") as f:
 access_len = len(tokens.get("access_token", "")) if isinstance(tokens.get("access_token"), str) else 0
 print(f"[entrypoint-railway] Wrote Hermes auth store ({access_len}-char access_token).")
 PYEOF
-    chmod 600 "${HERMES_AUTH_STORE}"
+        [ -f "${HERMES_AUTH_STORE}" ] && chmod 600 "${HERMES_AUTH_STORE}"
+    else
+        echo "[entrypoint-railway] WARN: base64 decode of CODEX_AUTH_JSON_B64 failed — env var is corrupted or truncated."
+    fi
 elif [ -f "${HERMES_AUTH_STORE}" ] && [ -n "${CODEX_AUTH_JSON_B64:-}" ]; then
     echo "[entrypoint-railway] Hermes auth store already exists; ignoring CODEX_AUTH_JSON_B64."
     echo "[entrypoint-railway] (Safe to seal / delete that env var in Railway now.)"
 fi
+set -e
 
 # Hand off to the upstream entrypoint (gosu drop + Hermes startup).
 exec /opt/hermes/docker/entrypoint.sh "$@"
