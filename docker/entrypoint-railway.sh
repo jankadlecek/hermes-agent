@@ -84,25 +84,75 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Codex OAuth bootstrap: write auth.json from env var if not on volume.
+# 2. Codex OAuth bootstrap: seed BOTH the Codex CLI auth file AND the
+#    Hermes auth store from CODEX_AUTH_JSON_B64 on first boot.
 # ---------------------------------------------------------------------------
-# Hermes defaults CODEX_HOME to $HOME/.codex, which for the hermes user
-# (HOME=/opt/data) resolves to /opt/data/.codex — already on the persistent
-# volume. So we only need to seed the file on first boot; subsequent boots
-# pick it up from disk and refresh tokens automatically.
+# Hermes auto-detects the inference provider via /opt/data/auth.json
+# (the Hermes auth store), looking for an `active_provider` key with a
+# logged-in provider entry. Just dropping the Codex CLI auth file into
+# /opt/data/.codex/auth.json is NOT enough — Hermes's auto-detect doesn't
+# enumerate OAuth providers without that auth_store entry, so the agent
+# init fails with "No inference provider configured" even though tokens
+# are on disk.
+#
+# So on first boot we:
+#   1. Decode CODEX_AUTH_JSON_B64 into /opt/data/.codex/auth.json
+#      (compat with Codex CLI shared-file path).
+#   2. Transform it into the Hermes auth store shape with
+#      active_provider="openai-codex" and write /opt/data/auth.json.
+# After that, Hermes manages refreshes itself in /opt/data/auth.json;
+# subsequent boots leave both files alone.
 CODEX_HOME_PATH="${CODEX_HOME:-${HERMES_HOME}/.codex}"
-if [ -n "${CODEX_AUTH_JSON_B64:-}" ]; then
+HERMES_AUTH_STORE="${HERMES_HOME}/auth.json"
+
+if [ -n "${CODEX_AUTH_JSON_B64:-}" ] && [ ! -f "${HERMES_AUTH_STORE}" ]; then
+    echo "[entrypoint-railway] Bootstrapping Codex auth + Hermes auth store."
     mkdir -p "${CODEX_HOME_PATH}"
-    if [ ! -f "${CODEX_HOME_PATH}/auth.json" ]; then
-        echo "[entrypoint-railway] Bootstrapping Codex auth from CODEX_AUTH_JSON_B64."
-        echo "${CODEX_AUTH_JSON_B64}" | base64 -d > "${CODEX_HOME_PATH}/auth.json"
-        chmod 600 "${CODEX_HOME_PATH}/auth.json"
-        # Ownership is fixed by the upstream entrypoint when it chowns the
-        # volume to hermes:hermes, so we don't need to chown here.
-    else
-        echo "[entrypoint-railway] Codex auth.json already on volume; ignoring CODEX_AUTH_JSON_B64."
-        echo "[entrypoint-railway] You can now delete the CODEX_AUTH_JSON_B64 env var in Railway."
-    fi
+
+    # 1. Codex CLI shared file (used as a fallback read source)
+    echo "${CODEX_AUTH_JSON_B64}" | base64 -d > "${CODEX_HOME_PATH}/auth.json"
+    chmod 600 "${CODEX_HOME_PATH}/auth.json"
+
+    # 2. Hermes auth store with active_provider + provider state. The Codex
+    #    CLI file has {tokens: {...}, last_refresh: ...} at top level;
+    #    Hermes wants it nested under providers["openai-codex"] with an
+    #    active_provider pointer at the top level.
+    python3 - "${CODEX_HOME_PATH}/auth.json" "${HERMES_AUTH_STORE}" <<'PYEOF'
+import json
+import sys
+from datetime import datetime, timezone
+
+codex_path, hermes_path = sys.argv[1], sys.argv[2]
+with open(codex_path) as f:
+    codex = json.load(f)
+
+tokens = codex.get("tokens") or {}
+last_refresh = codex.get("last_refresh") or (
+    datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+)
+
+hermes_auth = {
+    "active_provider": "openai-codex",
+    "providers": {
+        "openai-codex": {
+            "tokens": tokens,
+            "last_refresh": last_refresh,
+            "auth_mode": "chatgpt",
+        }
+    },
+}
+
+with open(hermes_path, "w") as f:
+    json.dump(hermes_auth, f, indent=2)
+
+print(f"[entrypoint-railway] Wrote Hermes auth store at {hermes_path}")
+print(f"[entrypoint-railway] active_provider = openai-codex (tokens len: "
+      f"{len(tokens.get('access_token','')) if isinstance(tokens.get('access_token'), str) else 0} chars)")
+PYEOF
+    chmod 600 "${HERMES_AUTH_STORE}"
+elif [ -f "${HERMES_AUTH_STORE}" ]; then
+    echo "[entrypoint-railway] Hermes auth store already exists; ignoring CODEX_AUTH_JSON_B64."
+    echo "[entrypoint-railway] (Safe to seal CODEX_AUTH_JSON_B64 in Railway.)"
 fi
 
 # ---------------------------------------------------------------------------
