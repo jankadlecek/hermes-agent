@@ -6,7 +6,12 @@
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile.railway"
 
+# Do NOT set startCommand here. Railway treats startCommand as a full
+# replacement for the image's ENTRYPOINT + CMD, which bypasses
+# Dockerfile.railway's tini + entrypoint-railway.sh wrapper (and therefore
+# skips Tailscale bring-up and Codex auth bootstrap). The Dockerfile
+# already declares both ENTRYPOINT and CMD ["gateway", "run"] — Railway
+# will use those when startCommand is omitted.
 [deploy]
-startCommand = "gateway run"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 5
