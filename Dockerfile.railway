@@ -1,0 +1,50 @@
+# Railway deployment image: Hermes Agent + Tailscale userspace networking.
+#
+# Strategy: extend the official published image rather than rebuilding from
+# source. The published image already has Python deps, Node deps, Playwright,
+# and the editable hermes install — re-doing that on every Railway build
+# costs ~10 minutes and Railway has stricter build timeouts than CI.
+#
+# This image adds:
+#   - tailscaled (userspace networking — no TUN/CAP_NET_ADMIN needed)
+#   - tailscale CLI
+#   - docker/entrypoint-railway.sh (joins tailnet, bootstraps Codex auth,
+#     then delegates to upstream entrypoint.sh)
+#
+# Pin to a specific upstream tag once Railway is stable. `latest` is fine
+# during initial bring-up so we always pick up upstream security fixes.
+
+FROM nousresearch/hermes-agent:latest
+
+USER root
+
+# Tailscale Debian repo (trixie = Debian 13, matches upstream base).
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl ca-certificates iptables iproute2 && \
+    install -d -m 0755 /usr/share/keyrings && \
+    curl -fsSL https://pkgs.tailscale.com/stable/debian/trixie.noarmor.gpg \
+        -o /usr/share/keyrings/tailscale-archive-keyring.gpg && \
+    curl -fsSL https://pkgs.tailscale.com/stable/debian/trixie.tailscale-keyring.list \
+        -o /etc/apt/sources.list.d/tailscale.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends tailscale && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --chmod=0755 docker/entrypoint-railway.sh /opt/hermes/docker/entrypoint-railway.sh
+
+# Override entrypoint to run the Tailscale + Codex bootstrap before the
+# upstream entrypoint. The upstream entrypoint still handles the gosu drop
+# and volume permissions, so we keep tini as PID 1.
+ENTRYPOINT [ "/usr/bin/tini", "-g", "--", "/opt/hermes/docker/entrypoint-railway.sh" ]
+
+# Sensible defaults for Railway. Override in service env vars as needed.
+ENV API_SERVER_ENABLED=true \
+    API_SERVER_HOST=0.0.0.0 \
+    API_SERVER_PORT=8642
+
+# Railway expects services to expose a port for health checks. We don't bind
+# Railway's public edge to this — Tailscale handles incoming traffic — but
+# declaring it lets `gateway run` start cleanly.
+EXPOSE 8642
+
+CMD ["gateway", "run"]

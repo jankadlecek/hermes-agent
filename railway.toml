@@ -1,0 +1,12 @@
+# Railway configuration for the Hermes Agent deployment.
+# Uses Dockerfile.railway instead of the default Dockerfile to layer
+# Tailscale on top of the upstream nousresearch/hermes-agent image.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile.railway"
+
+[deploy]
+startCommand = "gateway run"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
