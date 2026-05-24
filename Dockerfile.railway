@@ -38,13 +38,22 @@ COPY --chmod=0755 docker/entrypoint-railway.sh /opt/hermes/docker/entrypoint-rai
 ENTRYPOINT [ "/usr/bin/tini", "-g", "--", "/opt/hermes/docker/entrypoint-railway.sh" ]
 
 # Sensible defaults for Railway. Override in service env vars as needed.
+#
+# HERMES_DASHBOARD=1 tells the upstream entrypoint to spawn `hermes dashboard`
+# as a background process alongside the main `gateway run` command. We bind it
+# to 0.0.0.0 because the only network path into this container is the
+# Tailscale userspace tunnel — Railway does not expose a public domain. The
+# upstream docs warn against --host 0.0.0.0 on shared/LAN hosts, but in this
+# topology Tailscale IS the access boundary, so it's the correct setting.
 ENV API_SERVER_ENABLED=true \
     API_SERVER_HOST=0.0.0.0 \
-    API_SERVER_PORT=8642
+    API_SERVER_PORT=8642 \
+    HERMES_DASHBOARD=1 \
+    HERMES_DASHBOARD_HOST=0.0.0.0 \
+    HERMES_DASHBOARD_PORT=9119
 
-# Railway expects services to expose a port for health checks. We don't bind
-# Railway's public edge to this — Tailscale handles incoming traffic — but
-# declaring it lets `gateway run` start cleanly.
-EXPOSE 8642
+# Both ports are reachable over Tailscale. Railway's public edge is not bound
+# to either; these EXPOSEs are just metadata for the runtime.
+EXPOSE 8642 9119
 
 CMD ["gateway", "run"]
