@@ -52,16 +52,12 @@ if [ -n "${TS_AUTHKEY:-}" ]; then
     # `tailscale serve` so tailscaled accepts the connection on the
     # tailnet side and proxies it into the local process.
     #
-    # We use HTTP reverse-proxy mode rather than raw --tcp passthrough.
-    # TCP passthrough breaks browser keep-alive / chunked-transfer flows
-    # on larger responses (the React JS bundle stalls mid-download in
-    # Chrome even though curl streams it fine), because Tailscale's
-    # userspace TCP stack does not reassemble HTTP correctly for raw
-    # passthrough. HTTP mode lets tailscaled fully parse and re-emit
-    # the request/response, which fixes the stalls.
-    tailscale serve --bg --http=8642 http://127.0.0.1:8642 || \
+    # We use TCP passthrough so the published port on the tailnet matches
+    # the local port — keeps the operator's URLs intuitive
+    # (http://hermes.<tailnet>.ts.net:8642 and :9119).
+    tailscale serve --bg --tcp=8642 tcp://127.0.0.1:8642 || \
         echo "[entrypoint-railway] WARN: failed to publish API server (8642) via tailscale serve"
-    tailscale serve --bg --http=9119 http://127.0.0.1:9119 || \
+    tailscale serve --bg --tcp=9119 tcp://127.0.0.1:9119 || \
         echo "[entrypoint-railway] WARN: failed to publish dashboard (9119) via tailscale serve"
     echo "[entrypoint-railway] tailscale serve status:"
     tailscale serve status || true
