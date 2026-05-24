@@ -132,7 +132,15 @@ with open(hermes_path, "w") as f:
 access_len = len(tokens.get("access_token", "")) if isinstance(tokens.get("access_token"), str) else 0
 print(f"[entrypoint-railway] Wrote Hermes auth store ({access_len}-char access_token).")
 PYEOF
-        [ -f "${HERMES_AUTH_STORE}" ] && chmod 600 "${HERMES_AUTH_STORE}"
+        # Upstream entrypoint will gosu-drop to the hermes user. Ownership
+        # of files we created as root needs to be flipped or hermes won't
+        # be able to read them (manifests as "Permission denied" parsing
+        # auth.json, and Hermes silently falls back to "no provider").
+        if [ -f "${HERMES_AUTH_STORE}" ]; then
+            chmod 600 "${HERMES_AUTH_STORE}"
+            chown hermes:hermes "${HERMES_AUTH_STORE}" 2>/dev/null || true
+        fi
+        chown -R hermes:hermes "${CODEX_HOME_PATH}" 2>/dev/null || true
     else
         echo "[entrypoint-railway] WARN: base64 decode of CODEX_AUTH_JSON_B64 failed — env var is corrupted or truncated."
     fi
