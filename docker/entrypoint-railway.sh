@@ -86,7 +86,12 @@ CODEX_HOME_PATH="${CODEX_HOME:-${HERMES_HOME}/.codex}"
 # instead of letting it boot up with the dashboard reachable so the
 # operator can fix the env var. `set -e` is suspended for this block.
 set +e
-if [ -n "${CODEX_AUTH_JSON_B64:-}" ] && [ ! -f "${HERMES_AUTH_STORE}" ]; then
+if [ -n "${CODEX_AUTH_JSON_B64:-}" ] && \
+   { [ ! -f "${HERMES_AUTH_STORE}" ] || [ "${FORCE_CODEX_BOOTSTRAP:-}" = "1" ]; }; then
+    if [ -f "${HERMES_AUTH_STORE}" ]; then
+        echo "[entrypoint-railway] FORCE_CODEX_BOOTSTRAP=1 → overwriting existing Hermes auth store."
+        rm -f "${HERMES_AUTH_STORE}"
+    fi
     echo "[entrypoint-railway] Bootstrapping Codex auth → Hermes auth store."
     mkdir -p "${CODEX_HOME_PATH}"
     if echo "${CODEX_AUTH_JSON_B64}" | base64 -d > "${CODEX_HOME_PATH}/auth.json" 2>/dev/null; then
