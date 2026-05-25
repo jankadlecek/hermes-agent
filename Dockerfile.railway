@@ -22,7 +22,7 @@ USER root
 # without relying on Hermes' lazy-install mechanism — that path silently
 # leaves the running container without the client when the install hook
 # doesn't fire on first memory call. See hermes-agent v0.14 lazy_deps.py.
-RUN /opt/hermes/.venv/bin/pip install --no-cache-dir hindsight-client==0.6.1
+RUN uv pip install --no-cache-dir --python /opt/hermes/.venv/bin/python hindsight-client==0.6.1
 
 # Tailscale Debian repo (trixie = Debian 13, matches upstream base).
 RUN apt-get update && \
