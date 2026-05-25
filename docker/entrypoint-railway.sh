@@ -150,5 +150,56 @@ elif [ -f "${HERMES_AUTH_STORE}" ] && [ -n "${CODEX_AUTH_JSON_B64:-}" ]; then
 fi
 set -e
 
+# ---------------------------------------------------------------------------
+# Google Workspace OAuth client_secret bootstrap.
+# ---------------------------------------------------------------------------
+# Why this exists:
+#   The google-workspace skill's setup flow (skills/productivity/google-workspace/
+#   scripts/setup.py) expects a client_secret.json from a Google Cloud OAuth
+#   client (Desktop app type) at $HERMES_HOME/google_client_secret.json.
+#   Without it, Alfred has to ask the operator for the file path interactively,
+#   which means pasting OAuth credentials through Telegram + OpenAI Codex —
+#   not where credentials should live.
+#
+#   This pre-stages the file from a base64-encoded Railway env var so Alfred
+#   sees the secret as already present and skips straight to the auth-url
+#   flow. The actually-sensitive part (the user-authorized token) is generated
+#   by the OAuth dance and persisted to /opt/data/google_token.json — not in
+#   the env var.
+#
+# Setup:
+#   1. Download Desktop-app OAuth client JSON from Google Cloud Console.
+#   2. `base64 -i client_secret.json | tr -d '\n'` and paste into Railway as
+#      GOOGLE_OAUTH_CLIENT_JSON_B64.
+#   3. Redeploy. Then ask Alfred to set up Google Workspace — he won't ask
+#      for the file, just for the redirect URL after consent.
+#   4. Once google_token.json exists on the volume, the env var can be
+#      deleted / sealed.
+GOOGLE_CLIENT_SECRET_PATH="${HERMES_HOME}/google_client_secret.json"
+
+set +e
+if [ -n "${GOOGLE_OAUTH_CLIENT_JSON_B64:-}" ] && \
+   { [ ! -f "${GOOGLE_CLIENT_SECRET_PATH}" ] || [ "${FORCE_GOOGLE_OAUTH_BOOTSTRAP:-}" = "1" ]; }; then
+    if [ -f "${GOOGLE_CLIENT_SECRET_PATH}" ]; then
+        echo "[entrypoint-railway] FORCE_GOOGLE_OAUTH_BOOTSTRAP=1 → overwriting existing Google client secret."
+        rm -f "${GOOGLE_CLIENT_SECRET_PATH}"
+    fi
+    echo "[entrypoint-railway] Bootstrapping Google OAuth client secret → ${GOOGLE_CLIENT_SECRET_PATH}"
+    if echo "${GOOGLE_OAUTH_CLIENT_JSON_B64}" | base64 -d > "${GOOGLE_CLIENT_SECRET_PATH}" 2>/dev/null && \
+       python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert 'installed' in d or 'web' in d" "${GOOGLE_CLIENT_SECRET_PATH}" 2>/dev/null; then
+        chmod 600 "${GOOGLE_CLIENT_SECRET_PATH}"
+        chown hermes:hermes "${GOOGLE_CLIENT_SECRET_PATH}" 2>/dev/null || true
+        echo "[entrypoint-railway] Google OAuth client secret staged."
+    else
+        echo "[entrypoint-railway] WARN: GOOGLE_OAUTH_CLIENT_JSON_B64 is not a valid base64-encoded Google OAuth client JSON."
+        echo "[entrypoint-railway] WARN: expected file with top-level 'installed' or 'web' key. Skipping."
+        rm -f "${GOOGLE_CLIENT_SECRET_PATH}"
+    fi
+elif [ -f "${GOOGLE_CLIENT_SECRET_PATH}" ] && [ -n "${GOOGLE_OAUTH_CLIENT_JSON_B64:-}" ]; then
+    echo "[entrypoint-railway] Google client secret already on volume; ignoring GOOGLE_OAUTH_CLIENT_JSON_B64."
+    echo "[entrypoint-railway] (Safe to seal / delete that env var in Railway now.)"
+fi
+set -e
+
 # Hand off to the upstream entrypoint (gosu drop + Hermes startup).
 exec /opt/hermes/docker/entrypoint.sh "$@"
